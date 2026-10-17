@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AirDreamer 导航沙盒</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>body{margin:0}[hidden]{display:none!important}</style>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>AirDreamer 导航沙盒</h1>
+    <p>复现论文的任务设定：前向深度相机 48×80、15 维机体系状态、5 维动作（机体速度 + cos/sin 偏航）、20 Hz 控制和论文的奖励函数。控制器是对照用的经典方法和手动操作，还不是训练好的世界模型策略。</p>
+  </header>
+
+  <div class="toolbar">
+    <div class="group" id="scenes"><span class="label">场景</span></div>
+    <div class="group" id="ctrls"><span class="label">控制器</span></div>
+    <div class="group"><span class="label">倍速</span>
+      <select id="speed"><option value="1">1×</option><option value="2" selected>2×</option><option value="4">4×</option></select>
+    </div>
+    <div class="group">
+      <button class="primary" id="play">暂停</button>
+      <button id="reset">重新开始</button>
+    </div>
+    <div class="group">
+      <label class="chk"><input type="checkbox" id="randYaw" checked>随机初始朝向</label>
+      <label class="chk"><input type="checkbox" id="showMap" checked>显示占据栅格</label>
+      <label class="chk"><input type="checkbox" id="auto" checked>自动重开</label>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="viewport" id="vp">
+      <div class="hud" id="hud"></div>
+      <div class="views" id="views"></div>
+      <div class="banner" id="banner" hidden></div>
+    </div>
+    <div class="side">
+      <div class="card">
+        <h2><em>机载深度图 o<sup>d</sup></em><span>48×80 · [0.6, 6.0] m</span></h2>
+        <canvas id="depth" width="80" height="48"></canvas>
+        <div class="cbar">0.6 m<i></i>6.0 m</div>
+      </div>
+      <div class="card">
+        <h2><em>奖励 r<sub>t</sub></em><span id="step">t = 0</span></h2>
+        <div id="rewards"></div>
+        <div class="ret"><span>累计回报 G</span><span id="ret">0.00</span></div>
+      </div>
+      <div class="card">
+        <h2><em>观测 o<sup>s</sup> 与动作 a<sub>t</sub></em><span>机体系 FLU</span></h2>
+        <table id="obs"></table>
+      </div>
+      <div class="card">
+        <h2><em>动力学域随机化</em><span>每个 episode 重采样</span></h2>
+        <table id="dr"></table>
+      </div>
+      <div class="card">
+        <h2><em>Episode 记录</em><span id="sr"></span></h2>
+        <ul class="log" id="log"></ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <div class="card"><p><b>为什么要记忆。</b>相机视场只有 87°×58°，侧后方的障碍物看不到。贪心势场法在 U 形和 C 形陷阱里会卡住；建图 + A* 用显式地图记住看过的障碍，能绕出来。AirDreamer 用 RSSM 的隐状态 h<sub>t</sub> 隐式完成这件事。</p></div>
+    <div class="card"><p><b>奖励。</b>r = 10·r<sub>prog</sub> + 5·r<sub>safety</sub> + 2·r<sub>height</sub> + r<sub>goal</sub> + r<sub>collision</sub>。到达 1 m 内 +100 终止，离障碍 0.3 m 内 −5 终止，不对偏航角做任何约束。</p></div>
+    <div class="card"><p><b>操作。</b>选“手动”后用 <kbd>W</kbd><kbd>S</kbd> 前后，<kbd>A</kbd><kbd>D</kbd> 左右平移，<kbd>Q</kbd><kbd>E</kbd> 转头，<kbd>R</kbd><kbd>F</kbd> 升降。3D 视图可拖动旋转、滚轮缩放。</p></div>
+  </div>
+</div>
+
+
+<script src="vendor/three.min.js"></script>
+<script src="vendor/OrbitControls.js"></script>
+<script src="sim.js"></script>
+</body>
+</html>
