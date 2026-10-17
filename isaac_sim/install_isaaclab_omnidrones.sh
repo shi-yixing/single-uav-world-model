@@ -10,8 +10,8 @@ cd IsaacLab
 cd $Y/src/OmniDrones
 pip install -e .
 pip install "boto3==1.34.68" "botocore==1.34.68" "s3transfer<0.11"
-python -c "import torch, torchrl, tensordict; print('VERS', torch.__version__, torchrl.__version__, tensordict.__version__, torch.cuda.is_available())"
 pip install "tensordict==0.3.2"
 F=$CONDA_PREFIX/lib/python3.10/site-packages/isaacsim/exts/omni.isaac.core/omni/isaac/core/prims/xform_prim_view.py
 cp -n $F $F.orig && sed -i "s/self.get_world_poses(usd=usd)/self.get_world_poses()/" $F
+python -c "import torch, torchrl, tensordict; print('VERS', torch.__version__, torchrl.__version__, tensordict.__version__, torch.cuda.is_available())"
 echo SETUP2_DONE
