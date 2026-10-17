@@ -19,7 +19,7 @@ python -m http.server 8000
   - `CTRL`：控制器（贪心势场、建图 + A*、手动），输出机体系速度和世界系偏航指令
   - `controlStep`：一阶动力学 + 论文的奖励和终止条件
   - 后半部分：Three.js 3D 显示和右侧面板
-- `lib/`：three.js r147 和 OrbitControls（MIT 许可）
+- `vendor/`：three.js r147 和 OrbitControls（MIT 许可）
 
 ## 常见修改
 - 加场景：在 `SCENES` 里仿照已有条目写一个 `build()`，返回 `start`、`goal`、`boxes`
