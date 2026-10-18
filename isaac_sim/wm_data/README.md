@@ -33,3 +33,8 @@
 ## 校验
 `python collect.py --num_envs 4 --episodes 8 --out $Y/data/wm_test --validate` 会把渲染深度与按场景几何解析计算的深度对比。
 2026-10-18 的结果：中位绝对误差 0 m，95% 分位 0.03 m，说明障碍摆放、相机内参和读图时序都正确。
+
+## 世界模型训练与记忆探针
+- `train_wm.py train`（dreamer 环境）：用官方 DreamerV3 离线训练，随机截取 64 步窗口，每个窗口开头重置 RSSM 状态。深度量化为 uint8 图像，state 作为向量一起重建
+- `train_wm.py extract`：把整条 episode 依次送入编码器和 RSSM（跨块保留状态），导出每步的 h_t（deter）和 z_t（stoch），同时做开环测试：前半段用观测、后半段只用动作想象，解码出深度。`--random_init` 导出未训练模型的特征作为对照
+- `probe.py`（isaac41 环境）：用同一个 MLP 从特征还原 64×64 占据图，在验证集上按"当前可见 / 记忆 / 从未见过"三组分别统计 IoU 和召回率，并画出记忆随"离开视野的步数"衰减的曲线；对照组包括未训练模型和只看当前帧的 CNN
