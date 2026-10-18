@@ -27,7 +27,7 @@ p = argparse.ArgumentParser()
 p.add_argument("--data", required=True)
 p.add_argument("--feats", nargs="+", required=True, help="name=dir pairs")
 p.add_argument("--out", required=True)
-p.add_argument("--epochs", type=int, default=8)
+p.add_argument("--epochs", type=int, default=20)
 p.add_argument("--stride", type=int, default=2, help="use every n-th training step")
 p.add_argument("--no_frame", action="store_true")
 args = p.parse_args()
@@ -86,7 +86,8 @@ def load(name_dirs):
 class MLPProbe(nn.Module):
     def __init__(self, d):
         super().__init__()
-        self.net = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, 1024), nn.SiLU(), nn.Linear(1024, 1024), nn.SiLU(),
+        self.net = nn.Sequential(nn.LayerNorm(d), nn.Dropout(0.2), nn.Linear(d, 1024), nn.SiLU(), nn.Dropout(0.2),
+                                 nn.Linear(1024, 1024), nn.SiLU(),
                                  nn.Linear(1024, sg.EGO_N * sg.EGO_N))
 
     def forward(self, x):
@@ -109,22 +110,38 @@ def stack(eps, key, stride=1):
     return np.concatenate([e[key][::stride] for e in eps], 0)
 
 
-def fit(model, X, Y, epochs):
+def fit(model, X, Y, epochs, Xv, Yv):
+    """AdamW + dropout; keeps the epoch with the lowest loss on held-out training episodes (early stopping)."""
+    import copy
     model.to(dev)
-    opt = torch.optim.Adam(model.parameters(), 1e-3)
+    opt = torch.optim.AdamW(model.parameters(), 3e-4, weight_decay=0.05)
     pos_w = torch.tensor(10.0, device=dev)
-    n = len(X)
+    lossf = lambda x, y: nn.functional.binary_cross_entropy_with_logits(model(x), y, pos_weight=pos_w)
+    n, best, best_state, bad = len(X), np.inf, None, 0
     for ep in range(epochs):
+        model.train()
         perm = torch.randperm(n)
         tot = 0.0
         for k in range(0, n, 512):
-            idx = perm[k:k + 512]
-            x = torch.as_tensor(X[idx.numpy()], device=dev).float()
-            y = torch.as_tensor(Y[idx.numpy()], device=dev).float()
-            loss = nn.functional.binary_cross_entropy_with_logits(model(x), y, pos_weight=pos_w)
+            idx = perm[k:k + 512].numpy()
+            x = torch.as_tensor(X[idx], device=dev).float()
+            y = torch.as_tensor(Y[idx], device=dev).float()
+            loss = lossf(x, y)
             opt.zero_grad(); loss.backward(); opt.step()
             tot += loss.item() * len(idx)
-        print(f"  epoch {ep + 1}: loss {tot / n:.4f}", flush=True)
+        model.eval()
+        with torch.no_grad():
+            vl = np.mean([lossf(torch.as_tensor(Xv[k:k + 1024], device=dev).float(),
+                                torch.as_tensor(Yv[k:k + 1024], device=dev).float()).item()
+                          for k in range(0, len(Xv), 1024)])
+        print(f"  epoch {ep + 1}: train {tot / n:.4f}  held-out {vl:.4f}", flush=True)
+        if vl < best:
+            best, best_state, bad = vl, copy.deepcopy(model.state_dict()), 0
+        else:
+            bad += 1
+            if bad >= 3:
+                break
+    model.load_state_dict(best_state)
     return model
 
 
@@ -137,20 +154,33 @@ def predict(model, X):
     return np.concatenate(out)
 
 
+def avg_precision(score, label, bins=1000):
+    """Threshold-free average precision via a score histogram (exact up to bin width)."""
+    h_pos = np.bincount(np.minimum((score[label] * bins).astype(int), bins - 1), minlength=bins)[::-1]
+    h_neg = np.bincount(np.minimum((score[~label] * bins).astype(int), bins - 1), minlength=bins)[::-1]
+    tp, fp = np.cumsum(h_pos), np.cumsum(h_neg)
+    if tp[-1] == 0:
+        return 0.0
+    prec = tp / np.maximum(tp + fp, 1)
+    return float((prec * h_pos).sum() / tp[-1])
+
+
 def scores(pred, occ, seen, vis, age):
     P = pred > 0.5
     groups = {"vis": vis, "mem": seen & ~vis, "unseen": ~seen}
     res = {}
     for g, m in groups.items():
         tp = (P & occ & m).sum(); fp = (P & ~occ & m).sum(); fn = (~P & occ & m).sum()
-        res[g] = {"iou": float(tp / max(tp + fp + fn, 1)), "recall": float(tp / max(tp + fn, 1)),
+        res[g] = {"ap": avg_precision(pred[m], occ[m]), "base_rate": float(occ[m].mean()),
+                  "iou": float(tp / max(tp + fp + fn, 1)), "recall": float(tp / max(tp + fn, 1)),
                   "precision": float(tp / max(tp + fp, 1)), "obstacle_cells": int((occ & m).sum())}
     mem = seen & ~vis
     res["mem_by_age"] = {}
     for lo, hi in AGE_BINS:
         m = mem & (age >= lo) & (age <= hi)
         tp = (P & occ & m).sum(); fp = (P & ~occ & m).sum(); fn = (~P & occ & m).sum()
-        res["mem_by_age"][f"{lo}-{hi}"] = {"iou": float(tp / max(tp + fp + fn, 1)),
+        res["mem_by_age"][f"{lo}-{hi}"] = {"ap": avg_precision(pred[m], occ[m]), "base_rate": float(occ[m].mean()),
+                                           "iou": float(tp / max(tp + fp + fn, 1)),
                                            "recall": float(tp / max(tp + fn, 1)), "cells": int((occ & m).sum())}
     return res
 
@@ -163,18 +193,21 @@ va = [e for e in eps if e["split"] == "val"]
 if not va:                                   # tiny debug sets have no val split
     tr, va = tr[:-2], tr[-2:]
 print(f"{len(tr)} train / {len(va)} val episodes", flush=True)
-Ytr = stack(tr, "occ", args.stride)
+rs = np.random.default_rng(0).permutation(len(tr))
+ho = [tr[i] for i in rs[:max(len(tr) // 10, 1)]]          # held-out training episodes for early stopping
+tr = [tr[i] for i in rs[max(len(tr) // 10, 1):]]
+Ytr, Yho = stack(tr, "occ", args.stride), stack(ho, "occ", 4)
 lab = {k: stack(va, k) for k in ("occ", "seen", "vis", "age")}
 results, preds = {}, {}
 sets = list(name_dirs) + ([] if args.no_frame else ["frame"])
 for name in sets:
     print("probe:", name, flush=True)
     if name == "frame":
-        model = fit(FrameProbe(), stack(tr, "depth", args.stride), Ytr, args.epochs)
+        model = fit(FrameProbe(), stack(tr, "depth", args.stride), Ytr, args.epochs, stack(ho, "depth", 4), Yho)
         pr = predict(model, stack(va, "depth"))
     else:
         Xtr = stack(tr, name, args.stride)
-        model = fit(MLPProbe(Xtr.shape[1]), Xtr, Ytr, args.epochs)
+        model = fit(MLPProbe(Xtr.shape[1]), Xtr, Ytr, args.epochs, stack(ho, name, 4), Yho)
         pr = predict(model, stack(va, name))
     results[name] = scores(pr, lab["occ"], lab["seen"], lab["vis"], lab["age"])
     preds[name] = pr
@@ -189,12 +222,14 @@ import matplotlib.pyplot as plt
 fig, ax = plt.subplots(1, 2, figsize=(11, 4))
 for name in sets:
     r = results[name]
-    ax[0].bar([f"{g}\n{name}" for g in ("vis", "mem", "unseen")], [r[g]["iou"] for g in ("vis", "mem", "unseen")])
+    k = sets.index(name)
+    ax[0].bar(np.arange(3) + 0.25 * k, [r[g]["ap"] for g in ("vis", "mem", "unseen")], 0.25, label=name)
     bins = list(r["mem_by_age"])
-    ax[1].plot(range(len(bins)), [r["mem_by_age"][b]["recall"] for b in bins], marker="o", label=name)
-ax[0].set_ylabel("obstacle IoU"); ax[0].set_title("probe IoU by cell group"); ax[0].tick_params(axis="x", labelsize=7)
+    ax[1].plot(range(len(bins)), [r["mem_by_age"][b]["ap"] for b in bins], marker="o", label=name)
+ax[0].set_xticks(np.arange(3) + 0.25); ax[0].set_xticklabels(["visible now", "memory", "never seen"])
+ax[0].set_ylabel("obstacle average precision"); ax[0].set_title("probe AP by cell group"); ax[0].legend()
 ax[1].set_xticks(range(len(bins))); ax[1].set_xticklabels(bins)
-ax[1].set_xlabel("steps since last visible (20 Hz)"); ax[1].set_ylabel("obstacle recall (memory cells)")
+ax[1].set_xlabel("steps since last visible (20 Hz)"); ax[1].set_ylabel("obstacle AP (memory cells)")
 ax[1].set_title("memory decay"); ax[1].legend(); ax[1].set_ylim(0, 1)
 fig.tight_layout(); fig.savefig(os.path.join(args.out, "probe_summary.png"), dpi=130)
 
