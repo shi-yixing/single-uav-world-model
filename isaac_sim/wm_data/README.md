@@ -42,3 +42,8 @@
 ## 结果
 - `pipeline.sh`：采集满 1000 条后停止，然后依次训练、导出特征（训练后模型和未训练对照）、跑探针
 - `results/`：第一步的结果报告（`step1_results.md`）、方向一方案（`direction1_plan.md`）、图表和原始指标 json
+
+## 第二步（离线）：地图辅助损失
+- `train_wm.py train --map_scale λ`：在世界模型上加一个地图头，从 (h_t, z_t) 解码 64×64 占据图，只在"见过"的格子上计算加权交叉熵，梯度回传进 RSSM（`MapAgent` 类）。地图标签只在训练时使用
+- `pipeline_step2.sh`：训练 λ = 1 和 λ = 10 两个模型，导出特征，用与第一步相同的探针和基线对比
+- 结果见 `results/step2/step2_offline_results.md`：λ = 10 把记忆格 AP 从 0.118 提升到 0.145，深度重建和想象误差不变；λ = 1 基本无效

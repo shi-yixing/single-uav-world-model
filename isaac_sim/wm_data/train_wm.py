@@ -46,6 +46,9 @@ p.add_argument("--max_extract_train", type=int, default=600, help="train episode
 p.add_argument("--seed", type=int, default=0)
 p.add_argument("--random_init", action="store_true", help="extract: skip loading weights (untrained baseline)")
 p.add_argument("--feat_dir", default="features")
+p.add_argument("--map_scale", type=float, default=0.0,
+               help="weight of the auxiliary occupancy loss on seen cells (0 = plain DreamerV3)")
+p.add_argument("--map_pos_weight", type=float, default=5.0)
 args = p.parse_args()
 logdir = pathlib.Path(args.logdir)
 logdir.mkdir(parents=True, exist_ok=True)
@@ -69,6 +72,7 @@ def load_episode(path):
         "is_last": d["is_last"].astype(bool),
         "is_terminal": d["is_terminal"].astype(bool),
         "action": d["action"].astype(np.float32),
+        **({"occ": d["occ"].astype(bool), "seen": d["seen"].astype(bool)} if args.map_scale > 0 else {}),
     }
 
 
@@ -86,6 +90,9 @@ obs_space = {
     "is_terminal": elements.Space(bool),
 }
 act_space = {"action": elements.Space(np.float32, (5,), -1.0, 1.0)}
+MAP_KEYS = ("occ", "seen")          # privileged labels: used by the map loss only, never encoded or decoded
+if args.map_scale > 0:
+    obs_space.update({k: elements.Space(bool, (64, 64)) for k in MAP_KEYS})
 
 
 # ---------------------------------------------------------------- agent
@@ -118,6 +125,58 @@ class ProbeAgent(Agent):
         return carry, out
 
 
+import ninjax as nj
+import optax
+from embodied.jax import nets
+
+
+class MapHead(nj.Module):
+    units: int = 1024
+
+    def __init__(self):
+        pass
+
+    def __call__(self, x):
+        x = self.sub("mlp", nets.MLP, 2, self.units)(x)
+        return self.sub("out", nets.Linear, 64 * 64)(x)
+
+
+class MapAgent(ProbeAgent):
+    """DreamerV3 + auxiliary head that decodes the ego-centric occupancy map from (h_t, z_t).
+
+    The loss is a positive-weighted BCE averaged over cells that have been seen so far (visible now or
+    remembered); never-seen cells are not supervised. Gradients flow into the RSSM.
+    """
+
+    def __init__(self, obs_space, act_space, config):
+        base = {k: v for k, v in obs_space.items() if k not in MAP_KEYS}
+        orig = embodied.jax.Optimizer
+        holder = {}
+
+        def make_opt(modules, opt, **kw):                 # add the map head to the world-model optimizer
+            holder["head"] = MapHead(name="maphead")
+            return orig(list(modules) + [holder["head"]], opt, **kw)
+
+        embodied.jax.Optimizer = make_opt
+        try:
+            super().__init__(base, act_space, config)
+        finally:
+            embodied.jax.Optimizer = orig
+        self.maphead = holder["head"]
+        self.obs_space = obs_space
+
+    def loss(self, carry, obs, prevact, training):
+        loss, (carry, entries, outs, metrics) = super().loss(carry, obs, prevact, training)
+        B, T = obs["is_first"].shape
+        logits = self.maphead(self.feat2tensor(outs["repfeat"])).astype(jnp.float32).reshape(B, T, -1)
+        tgt = obs["occ"].reshape(B, T, -1).astype(jnp.float32)
+        mask = obs["seen"].reshape(B, T, -1).astype(jnp.float32)
+        bce = optax.sigmoid_binary_cross_entropy(logits, tgt) * (1 + (args.map_pos_weight - 1) * tgt)
+        lmap = (bce * mask).sum(-1) / jnp.maximum(mask.sum(-1), 1.0)
+        metrics["loss/map"] = lmap.mean()
+        return loss + args.map_scale * lmap.mean(), (carry, entries, outs, metrics)
+
+
 def make_agent(report_length):
     configs = yaml.YAML(typ="safe").load((DV3 / "dreamerv3" / "configs.yaml").read_text())
     config = elements.Config(configs["defaults"]).update(configs[args.size])
@@ -126,7 +185,8 @@ def make_agent(report_length):
         "batch_size": args.batch_size, "batch_length": args.batch_length, "report_length": report_length,
         "seed": args.seed, "logdir": str(logdir),
     })
-    agent = ProbeAgent(obs_space, act_space, elements.Config(
+    cls = MapAgent if args.map_scale > 0 else ProbeAgent
+    agent = cls(obs_space, act_space, elements.Config(
         **config.agent, logdir=config.logdir, seed=config.seed, jax=config.jax,
         batch_size=config.batch_size, batch_length=config.batch_length, replay_context=config.replay_context,
         report_length=config.report_length, replica=0, replicas=1))
