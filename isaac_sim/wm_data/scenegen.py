@@ -187,6 +187,40 @@ def sample_scene(rng, need_trap=False, max_tries=60):
     raise RuntimeError("could not sample a feasible scene")
 
 
+def sample_test_scene(rng, kind, max_tries=60):
+    """Fixed-structure evaluation scenes (reproducible with a seeded rng).
+
+    utrap: start in front of a U trap's opening, goal straight behind its back wall (must detour).
+    ctrap: start inside a C trap facing its back wall, goal behind that wall (must turn back, find the
+           gap and go around). A few pillars are scattered away from the trap and the endpoints.
+    """
+    assert kind in ("utrap", "ctrap"), kind
+    for _ in range(max_tries):
+        c = rng.uniform(-1.5, 1.5, 2)
+        yaw = rng.uniform(-np.pi, np.pi)
+        trap, r = _trap_boxes(c, yaw, "U" if kind == "utrap" else "C", rng)
+        R = rot2(yaw)
+        if kind == "utrap":
+            start, goal, start_yaw = c + R @ np.array([-(r + 4.0), 0.0]), c + R @ np.array([r + 4.0, 0.0]), yaw
+        else:
+            start, goal, start_yaw = c.copy(), c + R @ np.array([r + 5.0, 0.0]), yaw
+        if np.abs(np.stack([start, goal])).max() > ARENA - 0.5:
+            continue
+        boxes = list(trap)
+        for _ in range(rng.integers(4, 9)):
+            for _ in range(30):
+                b = np.array([[*rng.uniform(-ARENA, ARENA, 2), *rng.uniform(0.2, 0.5, 2), rng.uniform(-np.pi, np.pi)]])
+                if (min_dist(np.stack([start, goal]), b).min() > 1.5 and _clear_of(b, boxes, 0.9)
+                        and np.linalg.norm(b[0, :2] - c) > r + 1.5):
+                    boxes.append(b[0]); break
+        scene = Scene(np.array(boxes), start, goal, [kind], [c])
+        if scene.planner.plan(start, goal) is None:
+            continue
+        scene.start_yaw = start_yaw
+        return scene
+    raise RuntimeError("could not sample a test scene")
+
+
 def _clear_of(b, boxes, gap):
     """True if the corners/centre of new box b keep `gap` metres from existing boxes."""
     if len(boxes) == 0:
