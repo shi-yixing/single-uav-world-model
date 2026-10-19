@@ -21,6 +21,7 @@ parser.add_argument("--num_envs", type=int, default=16)
 parser.add_argument("--port", type=int, default=6100)
 parser.add_argument("--authkey", default="airdreamer")
 parser.add_argument("--labels", action="store_true", help="also send occ / seen map labels")
+parser.add_argument("--extras", action="store_true", help="also send pos / yaw (evaluation only, not in obs_space)")
 parser.add_argument("--max_steps", type=int, default=1200)
 parser.add_argument("--seed", type=int, default=0)
 args = parser.parse_args()
@@ -165,6 +166,8 @@ def read_obs(slots):
             "log/goal": np.float32(status == "goal"), "log/collision": np.float32(status == "collision"),
             "log/height": np.float32(status == "height"), "log/timeout": np.float32(last and status is None),
         }
+        if args.extras:
+            obs["pos"], obs["yaw"] = pos.astype(np.float32), np.float32(sg.yaw_of(q))
         if args.labels:
             _, occ, seen, _ = sg.labels(pos, sg.yaw_of(q), slot.scene.boxes, slot.seen)
             obs["occ"], obs["seen"] = occ, seen
@@ -176,7 +179,7 @@ def read_obs(slots):
 
 # ---------------------------------------------------------------- serve
 slots = [Slot(i) for i in range(N)]
-listener = Listener(("127.0.0.1", args.port), authkey=args.authkey.encode())
+listener = Listener(("127.0.0.1", args.port), authkey=args.authkey.encode(), backlog=128)
 print(f"SERVER_READY port={args.port} envs={N}", flush=True)
 conns = {}
 while len(conns) < N:                                   # every client introduces itself with its slot index

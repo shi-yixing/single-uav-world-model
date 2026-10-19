@@ -3,6 +3,7 @@
 The connection is opened lazily on the first step, so creating the env only to read its spaces
 (as DreamerV3's make_agent does) does not take a slot.
 """
+import time
 from multiprocessing.connection import Client
 
 import elements
@@ -43,7 +44,14 @@ class IsaacUAV(embodied.Env):
 
     def step(self, action):
         if self._conn is None:
-            self._conn = Client(("127.0.0.1", self.port), authkey=self.authkey.encode())
+            for attempt in range(60):                 # the server may still be busy accepting other slots
+                try:
+                    self._conn = Client(("127.0.0.1", self.port), authkey=self.authkey.encode())
+                    break
+                except (ConnectionRefusedError, ConnectionResetError, EOFError):
+                    time.sleep(1.0)
+            else:
+                raise ConnectionError(f"slot {self.index}: cannot reach rl_server on port {self.port}")
             self._conn.send(("hello", self.index))
         if action["reset"] or self._done:
             self._conn.send(("reset", self.next_reset_options()))
