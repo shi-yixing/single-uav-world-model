@@ -8,7 +8,7 @@ PORT=${PORT:-6100}
 mkdir -p $LOGDIR
 LABELS=""; [ "$(echo "$SCALE > 0" | bc)" = 1 ] && LABELS="--labels"
 conda activate $Y/envs/isaac41
-python rl_server.py --num_envs ${ENVS:-16} --port $PORT $LABELS > $LOGDIR/server.log 2>&1 &
+python rl_server.py --num_envs ${ENVS:-16} --port $PORT $LABELS ${SERVER_ARGS:-} > $LOGDIR/server.log 2>&1 &
 SERVER=$!
 until grep -q SERVER_READY $LOGDIR/server.log; do
   kill -0 $SERVER 2>/dev/null || { echo "server died"; tail -20 $LOGDIR/server.log; exit 1; }

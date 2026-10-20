@@ -187,23 +187,29 @@ def sample_scene(rng, need_trap=False, max_tries=60):
     raise RuntimeError("could not sample a feasible scene")
 
 
-def sample_test_scene(rng, kind, max_tries=60):
+def sample_test_scene(rng, kind, max_tries=60, jitter=False):
     """Fixed-structure evaluation scenes (reproducible with a seeded rng).
 
     utrap: start in front of a U trap's opening, goal straight behind its back wall (must detour).
     ctrap: start inside a C trap facing its back wall, goal behind that wall (must turn back, find the
            gap and go around). A few pillars are scattered away from the trap and the endpoints.
+    utrap_in: like ctrap but with a U trap: start inside facing the back wall, fly out of the opening,
+           then go around walls that are behind the drone and out of view.
+    jitter=True (training starts): random start yaw offset (+-1 rad) and goal bearing (+-60 deg).
     """
-    assert kind in ("utrap", "ctrap"), kind
+    assert kind in ("utrap", "ctrap", "utrap_in"), kind
     for _ in range(max_tries):
         c = rng.uniform(-1.5, 1.5, 2)
         yaw = rng.uniform(-np.pi, np.pi)
-        trap, r = _trap_boxes(c, yaw, "U" if kind == "utrap" else "C", rng)
+        trap, r = _trap_boxes(c, yaw, "C" if kind == "ctrap" else "U", rng)
         R = rot2(yaw)
+        gb = rng.uniform(-np.pi / 3, np.pi / 3) if jitter else 0.0
         if kind == "utrap":
             start, goal, start_yaw = c + R @ np.array([-(r + 4.0), 0.0]), c + R @ np.array([r + 4.0, 0.0]), yaw
         else:
-            start, goal, start_yaw = c.copy(), c + R @ np.array([r + 5.0, 0.0]), yaw
+            start = c.copy()
+            goal = c + R @ ((r + 5.0) * np.array([np.cos(gb), np.sin(gb)]))
+            start_yaw = yaw + (rng.uniform(-1.0, 1.0) if jitter else 0.0)
         if np.abs(np.stack([start, goal])).max() > ARENA - 0.5:
             continue
         boxes = list(trap)
