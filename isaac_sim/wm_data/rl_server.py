@@ -217,6 +217,8 @@ while True:
         for i in resets:                                # hover right after a teleport
             actions[i] = [0, 0, 0, np.cos(slots[i].yaw0), np.sin(slots[i].yaw0)]
     tc = time.time(); tsum["reset"] += tc - tb
+    if resets:                                          # moved obstacles show up in the next render; flush it
+        sim.render()
     physics(actions)
     td = time.time(); tsum["physics"] += td - tc
     obs = read_obs(slots)

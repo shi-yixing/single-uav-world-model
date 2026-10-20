@@ -85,6 +85,8 @@ for suite_i, suite in enumerate(args.suites.split(",")):
                 c.send(("reset", current[i] or {"kind": "random"}))
             else:
                 c.send(("step", np.clip(acts["action"][i], -1, 1).astype(np.float32)))
+    for c in conns:                                     # drain the replies to the last round so the next
+        c.recv()                                        # suite starts in lock-step with the server
     n = len(records)
     rates = {k: sum(r["outcome"] == k for r in records) / n for k in ("goal", "collision", "height", "timeout")}
     ok = [r["steps"] / 20 for r in records if r["outcome"] == "goal"]
