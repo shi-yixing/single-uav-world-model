@@ -187,6 +187,64 @@ def sample_scene(rng, need_trap=False, max_tries=60):
     raise RuntimeError("could not sample a feasible scene")
 
 
+def _deadend_boxes(c, yaw, L, w, t=0.3):
+    """Corridor of inner width w and length L along local x, closed at +x, open at -x."""
+    local = [(0.0, w / 2 + t / 2, L / 2, t / 2), (0.0, -(w / 2 + t / 2), L / 2, t / 2),
+             (L / 2 + t / 2, 0.0, t / 2, w / 2 + t)]
+    R = rot2(yaw)
+    return [(*(np.asarray(c) + R @ np.array([x, y])), hx, hy, yaw) for x, y, hx, hy in local]
+
+
+def sample_memory_scene(rng, kind, max_tries=80, jitter=False):
+    """Scenes where the key walls are out of view for many seconds before they matter.
+
+    deadend: start at the closed end of an 8-10 m corridor (2-2.5 m wide) facing the end wall; goal
+             behind the end wall. From the entrance the 6 m depth range cannot see the end wall, so a
+             policy that forgot the corridor is a dead end is tempted to fly back in.
+    nested:  the same corridor, enclosed by a U pocket that is closed behind the corridor entrance and
+             open on the goal side: fly out, turn around in the pocket, and leave through one of the
+             1.6-2 m side passages without re-entering the dead end.
+    """
+    assert kind in ("deadend", "nested"), kind
+    for _ in range(max_tries):
+        c, yaw = rng.uniform(-1.0, 1.0, 2), rng.uniform(-np.pi, np.pi)
+        L = rng.uniform(8.0, 10.0) if kind == "deadend" else rng.uniform(6.5, 8.0)
+        w, t = rng.uniform(2.0, 2.5), 0.3
+        R = rot2(yaw)
+        boxes = _deadend_boxes(c, yaw, L, w, t)
+        if kind == "nested":
+            gap = rng.uniform(1.6, 2.0)
+            yo = w / 2 + t + gap + t / 2                    # outer side walls
+            back = -L / 2 - gap - t / 2                     # outer back wall, behind the corridor entrance
+            x1 = L / 2 + 0.5                                # outer side walls end here (open towards +x)
+            for x, y, hx, hy in [((back + x1) / 2, yo, (x1 - back) / 2, t / 2),
+                                 ((back + x1) / 2, -yo, (x1 - back) / 2, t / 2),
+                                 (back, 0.0, t / 2, yo + t / 2)]:
+                boxes.append((*(c + R @ np.array([x, y])), hx, hy, yaw))
+        start = c + R @ np.array([L / 2 - 1.2, 0.0])
+        gb = rng.uniform(-0.4, 0.4) if jitter else 0.0
+        goal = c + R @ np.array([L / 2 + 3.5 + rng.uniform(0, 1.0), (L / 2 + 3.5) * np.tan(gb)])
+        start_yaw = yaw + (rng.uniform(-1.0, 1.0) if jitter else 0.0)
+        if np.abs(np.stack([start, goal])).max() > ARENA - 0.5:
+            continue
+        boxes = np.array(boxes)
+        corners = np.concatenate([b[:2] + np.abs(rot2(b[4])) @ b[2:4] * s for b in boxes for s in (1, -1)])
+        if np.abs(corners).max() > EXTENT - 0.5:
+            continue
+        for _ in range(rng.integers(3, 7)):              # a few pillars away from the structure
+            for _ in range(30):
+                b = np.array([[*rng.uniform(-ARENA, ARENA, 2), *rng.uniform(0.2, 0.5, 2), rng.uniform(-np.pi, np.pi)]])
+                if (min_dist(np.stack([start, goal]), b).min() > 1.5 and _clear_of(b, list(boxes), 1.2)
+                        and min_dist(b[:, :2], boxes).min() > 2.0):
+                    boxes = np.concatenate([boxes, b]); break
+        scene = Scene(boxes, start, goal, [kind], [c])
+        if scene.planner.plan(start, goal) is None:
+            continue
+        scene.start_yaw = start_yaw
+        return scene
+    raise RuntimeError("could not sample a memory scene")
+
+
 def sample_test_scene(rng, kind, max_tries=60, jitter=False):
     """Fixed-structure evaluation scenes (reproducible with a seeded rng).
 
@@ -197,6 +255,8 @@ def sample_test_scene(rng, kind, max_tries=60, jitter=False):
            then go around walls that are behind the drone and out of view.
     jitter=True (training starts): random start yaw offset (+-1 rad) and goal bearing (+-60 deg).
     """
+    if kind in ("deadend", "nested"):
+        return sample_memory_scene(rng, kind, jitter=jitter)
     assert kind in ("utrap", "ctrap", "utrap_in"), kind
     for _ in range(max_tries):
         c = rng.uniform(-1.5, 1.5, 2)

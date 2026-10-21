@@ -24,6 +24,7 @@ parser.add_argument("--labels", action="store_true", help="also send occ / seen 
 parser.add_argument("--extras", action="store_true", help="also send pos / yaw (evaluation only, not in obs_space)")
 parser.add_argument("--max_steps", type=int, default=1200)
 parser.add_argument("--seed", type=int, default=0)
+parser.add_argument("--trap_kinds", default="utrap_in,ctrap", help="scene kinds used for --trap_start_frac")
 parser.add_argument("--trap_start_frac", type=float, default=0.0,
                     help="training: fraction of random episodes that start inside a U or C trap")
 args = parser.parse_args()
@@ -98,7 +99,7 @@ class Slot:
         rng = np.random.default_rng(options["seed"]) if options.get("seed") is not None else self.rng
         kind = options.get("kind", "random")
         if kind == "random" and rng.random() < args.trap_start_frac:
-            self.scene = sg.sample_test_scene(rng, rng.choice(["utrap_in", "ctrap"]), jitter=True)
+            self.scene = sg.sample_test_scene(rng, rng.choice(args.trap_kinds.split(",")), jitter=True)
         elif kind == "random":
             self.scene = sg.sample_scene(rng)
         else:

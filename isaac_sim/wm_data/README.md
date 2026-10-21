@@ -60,3 +60,9 @@
 - `bench_server.py`：用随机动作测环境速度（GPU 空闲时 16 架约 164 步/秒，含地图标签）
 - `scenegen.sample_test_scene`：固定的 U/C 形陷阱测试场景，用于最终评测
 - `make_ppt_videos.py`：组会用的标签视频和"想象 vs 现实"视频
+
+## 第三轮：长时记忆场景
+- `scenegen.sample_memory_scene`：深死胡同（8–10 m 走廊，起点在最深处）和嵌套死胡同（走廊外再套一个口袋）
+- `rl_server.py --trap_kinds`：指定训练时"陷阱内起飞"使用的场景类型
+- `pipeline_mem_eval.sh`：用已训练模型零样本测试新场景；`pipeline_rl3.sh`：按规则自动决定是否重训并评测
+- 完整结论见 `results/FINAL_REPORT.md`
