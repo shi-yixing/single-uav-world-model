@@ -47,3 +47,22 @@
 - `train_wm.py train --map_scale λ`：在世界模型上加一个地图头，从 (h_t, z_t) 解码 64×64 占据图，只在"见过"的格子上计算加权交叉熵，梯度回传进 RSSM（`MapAgent` 类）。地图标签只在训练时使用
 - `pipeline_step2.sh`：训练 λ = 1 和 λ = 10 两个模型，导出特征，用与第一步相同的探针和基线对比
 - 结果见 `results/step2/step2_offline_results.md`：λ = 10 把记忆格 AP 从 0.118 提升到 0.145，深度重建和想象误差不变；λ = 1 基本无效
+
+## 第二步补充实验（多种子）
+- `pipeline_seeds.sh`：基线和 λ=10 各补 2 个种子，外加 λ=30，然后统一用探针评测；`plot_seeds.py` 画均值 ± 标准差图
+- 结果见 `results/step2_seeds/step2_seeds_results.md`：记忆格 AP 基线 0.126 ± 0.006，λ=10 为 0.149 ± 0.002，λ=30 为 0.165
+
+## 在线强化学习（进行中）
+- `rl_server.py`（isaac41 环境）：Isaac 环境服务器，N 架无人机同步步进，观测/动作/奖励与采集一致，`--labels` 时附带地图标签
+- `isaac_uav_env.py`（dreamer 环境）：DreamerV3 的环境客户端，每个环境进程占一个无人机槽位
+- `train_rl.py`：在线 DreamerV3 训练入口，`--map_scale` 打开地图辅助损失（`wm_agents.py`）
+- `run_rl.sh <logdir> <map_scale> [参数]`：先启动服务器，再启动训练
+- `bench_server.py`：用随机动作测环境速度（GPU 空闲时 16 架约 164 步/秒，含地图标签）
+- `scenegen.sample_test_scene`：固定的 U/C 形陷阱测试场景，用于最终评测
+- `make_ppt_videos.py`：组会用的标签视频和"想象 vs 现实"视频
+
+## 第三轮：长时记忆场景
+- `scenegen.sample_memory_scene`：深死胡同（8–10 m 走廊，起点在最深处）和嵌套死胡同（走廊外再套一个口袋）
+- `rl_server.py --trap_kinds`：指定训练时"陷阱内起飞"使用的场景类型
+- `pipeline_mem_eval.sh`：用已训练模型零样本测试新场景；`pipeline_rl3.sh`：按规则自动决定是否重训并评测
+- 完整结论见 `results/FINAL_REPORT.md`
