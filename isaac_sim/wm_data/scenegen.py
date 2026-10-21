@@ -245,6 +245,78 @@ def sample_memory_scene(rng, kind, max_tries=80, jitter=False):
     raise RuntimeError("could not sample a memory scene")
 
 
+def _finish_scene(rng, boxes, start, goal, start_yaw, c, kind, n_pillars=(2, 5)):
+    boxes = np.array(boxes)
+    corners = np.concatenate([b[:2] + np.abs(rot2(b[4])) @ b[2:4] * s for b in boxes for s in (1, -1)])
+    if np.abs(np.stack([start, goal])).max() > ARENA + 0.5 or np.abs(corners).max() > EXTENT - 0.3:
+        return None
+    for _ in range(rng.integers(*n_pillars)):
+        for _ in range(30):
+            b = np.array([[*rng.uniform(-ARENA, ARENA, 2), *rng.uniform(0.2, 0.5, 2), rng.uniform(-np.pi, np.pi)]])
+            if (min_dist(np.stack([start, goal]), b).min() > 1.5 and min_dist(b[:, :2], boxes).min() > 2.0):
+                boxes = np.concatenate([boxes, b]); break
+    scene = Scene(boxes, start, goal, [kind], [c])
+    if scene.planner.plan(start, goal) is None:
+        return None
+    scene.start_yaw = start_yaw
+    return scene
+
+
+def sample_hard_scene(rng, kind, max_tries=120):
+    """Harder zero-shot memory tests (not used in training).
+
+    deadend_long: 12-15 m dead-end corridor; start at the closed end facing it, goal behind it.
+    nested3: three levels of pockets (corridor, pocket, outer pocket), so the drone must turn back three
+             times, each time with the previous walls far out of view.
+    fork: a corridor ends in a T junction whose two 6.5 m arms look identical within the 6 m depth range;
+          one arm is closed, the other leads out to the goal. Start at the closed back of the corridor.
+    """
+    t = 0.3
+    for _ in range(max_tries):
+        c, yaw = rng.uniform(-0.8, 0.8, 2), rng.uniform(-np.pi, np.pi)
+        R = rot2(yaw)
+        P = lambda x, y: c + R @ np.array([x, y])
+        box = lambda x, y, hx, hy: (*P(x, y), hx, hy, yaw)
+        if kind == "deadend_long":
+            L, w = rng.uniform(12.0, 15.0), rng.uniform(2.0, 2.4)
+            boxes = _deadend_boxes(c, yaw, L, w, t)
+            start, goal = P(L / 2 - 1.2, 0.0), P(L / 2 + 3.0, rng.uniform(-1.5, 1.5))
+        elif kind == "nested3":
+            L, w, gap = rng.uniform(5.0, 6.0), rng.uniform(2.0, 2.3), rng.uniform(1.6, 1.9)
+            boxes = _deadend_boxes(c, yaw, L, w, t)              # level 1: open at -x
+            y1 = w / 2 + t + gap + t / 2
+            xb1, xe1 = -L / 2 - gap - t / 2, L / 2 + 0.4        # level 2: closed at -x, open at +x
+            boxes += [box((xb1 + xe1) / 2, y1, (xe1 - xb1) / 2, t / 2), box((xb1 + xe1) / 2, -y1, (xe1 - xb1) / 2, t / 2),
+                      box(xb1, 0.0, t / 2, y1 + t / 2)]
+            y2 = y1 + t / 2 + gap + t / 2
+            xb2, xe2 = xb1 - 0.4, xe1 + gap + t / 2             # level 3: closed at +x, open at -x
+            boxes += [box((xb2 + xe2) / 2, y2, (xe2 - xb2) / 2, t / 2), box((xb2 + xe2) / 2, -y2, (xe2 - xb2) / 2, t / 2),
+                      box(xe2, 0.0, t / 2, y2 + t / 2)]
+            start, goal = P(L / 2 - 1.0, 0.0), P(xe2 + 2.5, 0.0)
+        elif kind == "fork":
+            Lc, w, arm = rng.uniform(4.0, 5.0), rng.uniform(2.0, 2.3), 6.5
+            xj = Lc / 2                                          # junction centre at x = xj + w / 2
+            boxes = [box(0.0, w / 2 + t / 2, Lc / 2, t / 2), box(0.0, -(w / 2 + t / 2), Lc / 2, t / 2),
+                     box(-Lc / 2 - t / 2, 0.0, t / 2, w / 2 + t)]   # stem, closed at -x
+            xc = xj + w / 2
+            boxes.append(box(xc + w / 2 + t / 2, 0.0, t / 2, w / 2 + arm + t))  # far wall of the T
+            for sgn in (1, -1):                                  # near walls of the two arms
+                yc = sgn * (w / 2 + arm / 2)
+                boxes.append(box(xj - t / 2 + 0.0, yc + 0.0, t / 2, arm / 2 - 0.0))
+            closed = rng.choice([1, -1])
+            boxes.append(box(xc, closed * (w / 2 + arm + t / 2), w / 2 + t, t / 2))  # cap one arm
+            start = P(-Lc / 2 + 1.0, 0.0)
+            goal = P(xc + w / 2 + 3.0, -closed * (w / 2 + arm + 1.0))
+        else:
+            raise ValueError(kind)
+        scene = _finish_scene(rng, boxes, start, goal, yaw + (np.pi if kind == "fork" else 0.0) * 0 + 0.0, c, kind)
+        if scene is not None:
+            if kind == "fork":
+                scene.start_yaw = yaw                            # face the junction
+            return scene
+    raise RuntimeError(f"could not sample {kind}")
+
+
 def sample_test_scene(rng, kind, max_tries=60, jitter=False):
     """Fixed-structure evaluation scenes (reproducible with a seeded rng).
 
@@ -257,6 +329,8 @@ def sample_test_scene(rng, kind, max_tries=60, jitter=False):
     """
     if kind in ("deadend", "nested"):
         return sample_memory_scene(rng, kind, jitter=jitter)
+    if kind in ("deadend_long", "nested3", "fork"):
+        return sample_hard_scene(rng, kind)
     assert kind in ("utrap", "ctrap", "utrap_in"), kind
     for _ in range(max_tries):
         c = rng.uniform(-1.5, 1.5, 2)
